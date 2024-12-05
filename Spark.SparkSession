@@ -1,0 +1,96 @@
+import org.apache.spark.sql.SparkSession
+import org.apache.spark.sql.functions._
+import org.apache.spark.ml.feature.{VectorAssembler, StringIndexer}
+import org.apache.spark.ml.regression.LinearRegression
+import org.apache.spark.ml.evaluation.RegressionEvaluator
+
+object BigDataProjectWithSpark {
+  def main(args: Array[String]): Unit = {
+
+    // Initialiser SparkSession
+    val spark = SparkSession.builder()
+      .appName("Big Data Project with AI")
+      .config("spark.master", "yarn") // Mode Hadoop YARN
+      .getOrCreate()
+
+    // Charger le dataset depuis HDFS
+    val datasetPath = "hdfs:///projet/concatenated_all_data.csv"
+    val data = spark.read
+      .option("header", "true")
+      .option("inferSchema", "true")
+      .csv(datasetPath)
+
+    // Vérifier le schéma et les données
+    println("Schéma des données :")
+    data.printSchema()
+
+    println("Exemple de données :")
+    data.show(10)
+
+    // Sélection des colonnes pertinentes
+    val selectedData = data.select("Confirmed", "Active", "Incident_Rate", "Testing_Rate", "Deaths")
+      .na.drop() // Supprimer les lignes contenant des valeurs nulles
+   // Préparer les données pour l'apprentissage automatique
+    val featureCols = Array("Confirmed", "Active", "Incident_Rate", "Testing_Rate")
+    val assembler = new VectorAssembler()
+      .setInputCols(featureCols)
+      .setOutputCol("features")
+
+    val assembledData = assembler.transform(selectedData)
+
+    // Indexer la colonne cible (Deaths)
+    val indexer = new StringIndexer()
+      .setInputCol("Deaths")
+      .setOutputCol("label")
+
+    val finalData = indexer.fit(assembledData).transform(assembledData)
+
+    // Diviser les données en ensembles d'entraînement et de test
+    val Array(trainingData, testData) = finalData.randomSplit(Array(0.8, 0.2), seed = 1234L)
+
+    // Initialiser un modèle de régression linéaire
+    val lr = new LinearRegression()
+      .setFeaturesCol("features")
+      .setLabelCol("label")
+      .setMaxIter(100) // Nombre maximum d'itérations
+      .setRegParam(0.3) // Paramètre de régularisation
+
+    // Entraîner le modèle sur les données d'entraînement
+    val lrModel = lr.fit(trainingData)
+
+    // Résumé du modèle
+    println(s"Coefficients: ${lrModel.coefficients} Intercept: ${lrModel.intercept}")
+    //  ~Ivaluer le modèle sur les données de test
+    val predictions = lrModel.transform(testData)
+
+    println("Prédictions :")
+    predictions.select("features", "label", "prediction").show(10)
+
+    // Calcul des métriques d'évaluation
+    val evaluator = new RegressionEvaluator()
+      .setLabelCol("label")
+      .setPredictionCol("prediction")
+      .setMetricName("rmse") // Root Mean Squared Error
+
+    val rmse = evaluator.evaluate(predictions)
+    println(s"Root Mean Squared Error (RMSE) : $rmse")
+
+    // Convertir la colonne features en chaîne pour la sauvegarde
+    val predictionsFormatted = predictions.withColumn(
+      "features",
+      col("features").cast("string")
+    )
+
+    // Sauvegarder les résultats dans HDFS
+    val outputPath = "hdfs:///projet/predictions"
+    predictionsFormatted.select("features", "label", "prediction")
+      .write
+      .option("header", "true")
+      .csv(outputPath)
+
+     println(s"Résultats sauvegardés  |  : $outputPath")
+
+    // Arrêter SparkSession
+    spark.stop()
+  }
+}
